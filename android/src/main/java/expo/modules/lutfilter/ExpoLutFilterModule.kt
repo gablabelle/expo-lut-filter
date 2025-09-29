@@ -33,7 +33,7 @@ class ExpoLutFilterModule : Module() {
   
   // RenderScript instance for 3D LUT processing
   private val renderScript: RenderScript by lazy {
-    RenderScript.create(context)
+    RenderScript.create(appContext.reactContext)
   }
   
   // Custom exception classes matching iOS
@@ -114,7 +114,7 @@ class ExpoLutFilterModule : Module() {
       
       val inputStream = when (uri.scheme) {
         "file" -> File(uri.path!!).inputStream()
-        "content" -> context.contentResolver.openInputStream(uri)
+        "content" -> appContext.reactContext!!.contentResolver.openInputStream(uri)
         "http", "https" -> URL(uriString).openStream()
         else -> throw InputError("Unsupported URI scheme: ${uri.scheme}")
       }
@@ -136,7 +136,7 @@ class ExpoLutFilterModule : Module() {
     val outputBitmap = Bitmap.createBitmap(
       inputBitmap.width, 
       inputBitmap.height, 
-      inputBitmap.config
+      inputBitmap.config ?: Bitmap.Config.ARGB_8888
     )
     
     try {
@@ -172,7 +172,7 @@ class ExpoLutFilterModule : Module() {
   private fun applyLutManually(inputBitmap: Bitmap, lutFilter: LutFilter): Bitmap {
     val width = inputBitmap.width
     val height = inputBitmap.height
-    val outputBitmap = Bitmap.createBitmap(width, height, inputBitmap.config)
+    val outputBitmap = Bitmap.createBitmap(width, height, inputBitmap.config ?: Bitmap.Config.ARGB_8888)
     
     // Process each pixel
     for (y in 0 until height) {
@@ -198,7 +198,7 @@ class ExpoLutFilterModule : Module() {
     val outputBitmap = Bitmap.createBitmap(
       baseBitmap.width,
       baseBitmap.height,
-      baseBitmap.config
+      baseBitmap.config ?: Bitmap.Config.ARGB_8888
     )
     
     val canvas = Canvas(outputBitmap)
@@ -234,12 +234,12 @@ class ExpoLutFilterModule : Module() {
    * Saves bitmap to cache directory and returns the file URI
    */
   private fun saveBitmapToCache(bitmap: Bitmap, compressionQuality: Double): String {
-    val cacheDir = context.cacheDir
+    val cacheDir = appContext.reactContext!!.cacheDir
     val fileName = "${UUID.randomUUID()}.jpg"
     val file = File(cacheDir, fileName)
     
     try {
-      FileOutputStream(file).use { out ->
+      FileOutputStream(file).use { out: FileOutputStream ->
         bitmap.compress(
           Bitmap.CompressFormat.JPEG, 
           (compressionQuality * 100).toInt(), 
