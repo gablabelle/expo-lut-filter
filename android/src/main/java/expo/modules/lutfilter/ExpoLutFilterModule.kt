@@ -3,10 +3,12 @@ package expo.modules.lutfilter
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
+import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
 import android.net.Uri
+import androidx.exifinterface.media.ExifInterface
 import android.renderscript.Allocation
 import android.renderscript.Element
 import android.renderscript.RenderScript
@@ -118,11 +120,19 @@ class ExpoLutFilterModule : Module() {
   
   /**
    * Loads a bitmap from a URI (supports file:// and content:// URIs)
+   * Properly handles EXIF orientation to match iOS behavior
    */
   private fun loadBitmapFromUri(uriString: String): Bitmap? {
     return try {
       println("📷 [ANDROID] Attempting to load bitmap from: $uriString")
-      
+
+      // Get the file path for EXIF reading
+      val filePath = when {
+        uriString.startsWith("/") -> uriString
+        uriString.startsWith("file://") -> Uri.parse(uriString).path
+        else -> null
+      }
+
       // Handle both URI formats and direct file paths
       val inputStream = when {
         // Direct file path (no scheme)
@@ -136,7 +146,7 @@ class ExpoLutFilterModule : Module() {
         else -> {
           val uri = Uri.parse(uriString)
           println("📷 [ANDROID] Parsed URI scheme: ${uri.scheme}, path: ${uri.path}")
-          
+
           when (uri.scheme) {
             "file" -> {
               val file = File(uri.path!!)
@@ -155,22 +165,85 @@ class ExpoLutFilterModule : Module() {
           }
         }
       }
-      
-      val bitmap = inputStream?.use { stream ->
+
+      var bitmap = inputStream?.use { stream ->
         BitmapFactory.decodeStream(stream)
       }
-      
+
       if (bitmap != null) {
         println("📷 [ANDROID] Successfully loaded bitmap: ${bitmap.width}x${bitmap.height}")
+
+        // Apply EXIF orientation if we have a file path (matches iOS applyOrientationProperty behavior)
+        if (filePath != null) {
+          bitmap = applyExifOrientation(bitmap, filePath)
+        }
       } else {
         println("📷 [ANDROID] Failed to decode bitmap from stream")
       }
-      
+
       bitmap
     } catch (e: Exception) {
       println("📷 [ANDROID] Error loading bitmap from $uriString: ${e.javaClass.simpleName} - ${e.message}")
       e.printStackTrace()
       null
+    }
+  }
+
+  /**
+   * Applies EXIF orientation to bitmap (matches iOS CIImageOption.applyOrientationProperty)
+   */
+  private fun applyExifOrientation(bitmap: Bitmap, filePath: String): Bitmap {
+    return try {
+      val exif = ExifInterface(filePath)
+      val orientation = exif.getAttributeInt(
+        ExifInterface.TAG_ORIENTATION,
+        ExifInterface.ORIENTATION_NORMAL
+      )
+
+      println("📷 [ANDROID] EXIF orientation: $orientation")
+
+      val matrix = Matrix()
+      when (orientation) {
+        ExifInterface.ORIENTATION_ROTATE_90 -> {
+          println("📷 [ANDROID] Rotating 90 degrees")
+          matrix.postRotate(90f)
+        }
+        ExifInterface.ORIENTATION_ROTATE_180 -> {
+          println("📷 [ANDROID] Rotating 180 degrees")
+          matrix.postRotate(180f)
+        }
+        ExifInterface.ORIENTATION_ROTATE_270 -> {
+          println("📷 [ANDROID] Rotating 270 degrees")
+          matrix.postRotate(270f)
+        }
+        ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> {
+          println("📷 [ANDROID] Flipping horizontally")
+          matrix.postScale(-1f, 1f)
+        }
+        ExifInterface.ORIENTATION_FLIP_VERTICAL -> {
+          println("📷 [ANDROID] Flipping vertically")
+          matrix.postScale(1f, -1f)
+        }
+        else -> {
+          println("📷 [ANDROID] No rotation needed")
+          return bitmap
+        }
+      }
+
+      val rotatedBitmap = Bitmap.createBitmap(
+        bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true
+      )
+      println("📷 [ANDROID] Rotated bitmap: ${rotatedBitmap.width}x${rotatedBitmap.height}")
+
+      // Recycle the original bitmap if it's different
+      if (rotatedBitmap != bitmap) {
+        bitmap.recycle()
+      }
+
+      rotatedBitmap
+    } catch (e: Exception) {
+      println("📷 [ANDROID] Failed to apply EXIF orientation: ${e.message}")
+      bitmap
     }
   }
   
@@ -193,6 +266,10 @@ class ExpoLutFilterModule : Module() {
 
     println("📷 [ANDROID] Processing ${width}x${height} image with LUT transformation")
 
+    // Sample a few pixels to debug
+    var changedPixels = 0
+    var sampleCount = 0
+
     // Process each pixel through the LUT
     for (y in 0 until height) {
       for (x in 0 until width) {
@@ -200,10 +277,27 @@ class ExpoLutFilterModule : Module() {
         // Transform pixel using trilinear interpolation LUT lookup
         val transformedPixel = lutFilter.transformPixel(pixel)
         outputBitmap.setPixel(x, y, transformedPixel)
+
+        // Debug: check if pixels are actually changing
+        if (pixel != transformedPixel) {
+          changedPixels++
+        }
+
+        // Sample first few pixels for debugging
+        if (sampleCount < 5) {
+          val r = (pixel shr 16) and 0xFF
+          val g = (pixel shr 8) and 0xFF
+          val b = pixel and 0xFF
+          val rNew = (transformedPixel shr 16) and 0xFF
+          val gNew = (transformedPixel shr 8) and 0xFF
+          val bNew = transformedPixel and 0xFF
+          println("📷 [ANDROID] Pixel sample: RGB($r,$g,$b) -> RGB($rNew,$gNew,$bNew)")
+          sampleCount++
+        }
       }
     }
 
-    println("📷 [ANDROID] LUT transformation complete")
+    println("📷 [ANDROID] LUT transformation complete: $changedPixels/${width*height} pixels changed")
     return outputBitmap
   }
   
