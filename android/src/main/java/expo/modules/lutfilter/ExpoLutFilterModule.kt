@@ -193,16 +193,19 @@ class ExpoLutFilterModule : Module() {
     
     println("📷 [ANDROID] Processing ${width}x${height} image with linear LUT lookup")
     
+    // TEMPORARY: Test without LUT to isolate the issue
+    println("📷 [ANDROID] TESTING: Bypassing LUT to test image processing")
+    
     // Process each pixel
     for (y in 0 until height) {
       for (x in 0 until width) {
         val pixel = inputBitmap.getPixel(x, y)
-        val newPixel = lutFilter.transformPixelLinear(pixel)
-        outputBitmap.setPixel(x, y, newPixel)
+        // For testing: just copy the original pixel
+        outputBitmap.setPixel(x, y, pixel)
       }
     }
     
-    println("📷 [ANDROID] Manual LUT processing complete")
+    println("📷 [ANDROID] Manual processing complete (no LUT applied)")
     return outputBitmap
   }
   
@@ -374,7 +377,7 @@ class ExpoLutFilterModule : Module() {
     }
     
     /**
-     * Transforms a single pixel using linear LUT lookup (matches iOS)
+     * Transforms a single pixel using simple nearest-neighbor LUT lookup
      */
     fun transformPixelLinear(pixel: Int): Int {
       val r = (pixel shr 16) and 0xFF
@@ -382,9 +385,16 @@ class ExpoLutFilterModule : Module() {
       val b = pixel and 0xFF
       val a = (pixel shr 24) and 0xFF
       
-      // Calculate linear index in the LUT based on RGB values
-      // This matches how iOS Core Image processes the linear pixel data
-      val lutIndex = (b * dimension * dimension + g * dimension + r) * 4
+      // Simple approach: treat the LUT as a linear array where each position
+      // corresponds directly to an RGB combination
+      // For a 64x64x64 LUT, we need to map 0-255 RGB values to 0-63 indices
+      val rLut = (r * dimension / 256).coerceIn(0, dimension - 1)
+      val gLut = (g * dimension / 256).coerceIn(0, dimension - 1)
+      val bLut = (b * dimension / 256).coerceIn(0, dimension - 1)
+      
+      // Try the standard cube indexing: z*width*height + y*width + x
+      // where x=R, y=G, z=B (or vice versa)
+      val lutIndex = (bLut * dimension * dimension + gLut * dimension + rLut) * 4
       
       if (lutIndex + 3 < lutData.size) {
         val newR = (lutData[lutIndex] * 255).toInt().coerceIn(0, 255)
@@ -394,7 +404,18 @@ class ExpoLutFilterModule : Module() {
         return (a shl 24) or (newR shl 16) or (newG shl 8) or newB
       }
       
-      // Return original pixel if index out of bounds
+      // If standard indexing fails, try simple linear progression
+      val simpleIndex = ((r + g + b) * lutData.size / (255 * 3 * 4)).coerceIn(0, lutData.size / 4 - 1) * 4
+      
+      if (simpleIndex + 3 < lutData.size) {
+        val newR = (lutData[simpleIndex] * 255).toInt().coerceIn(0, 255)
+        val newG = (lutData[simpleIndex + 1] * 255).toInt().coerceIn(0, 255) 
+        val newB = (lutData[simpleIndex + 2] * 255).toInt().coerceIn(0, 255)
+        
+        return (a shl 24) or (newR shl 16) or (newG shl 8) or newB
+      }
+      
+      // Return original pixel if both methods fail
       return pixel
     }
     
