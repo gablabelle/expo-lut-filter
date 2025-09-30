@@ -190,22 +190,20 @@ class ExpoLutFilterModule : Module() {
     val width = inputBitmap.width
     val height = inputBitmap.height
     val outputBitmap = Bitmap.createBitmap(width, height, inputBitmap.config ?: Bitmap.Config.ARGB_8888)
-    
-    println("📷 [ANDROID] Processing ${width}x${height} image with linear LUT lookup")
-    
-    // TEMPORARY: Test without LUT to isolate the issue
-    println("📷 [ANDROID] TESTING: Bypassing LUT to test image processing")
-    
-    // Process each pixel
+
+    println("📷 [ANDROID] Processing ${width}x${height} image with LUT transformation")
+
+    // Process each pixel through the LUT
     for (y in 0 until height) {
       for (x in 0 until width) {
         val pixel = inputBitmap.getPixel(x, y)
-        // For testing: just copy the original pixel
-        outputBitmap.setPixel(x, y, pixel)
+        // Transform pixel using trilinear interpolation LUT lookup
+        val transformedPixel = lutFilter.transformPixel(pixel)
+        outputBitmap.setPixel(x, y, transformedPixel)
       }
     }
-    
-    println("📷 [ANDROID] Manual processing complete (no LUT applied)")
+
+    println("📷 [ANDROID] LUT transformation complete")
     return outputBitmap
   }
   
