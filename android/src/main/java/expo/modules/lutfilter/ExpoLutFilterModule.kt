@@ -73,7 +73,7 @@ class ExpoLutFilterModule : Module() {
       
       try {
         println("📷 [ANDROID] applyLUT called with:")
-        println("📷 [ANDROID]   inputImageUri: $inputImageUri")
+        println("📷 [ANDROID]   inputImageUri: '$inputImageUri' (${inputImageUri?.javaClass?.simpleName})")
         println("📷 [ANDROID]   filterId: $filterId")
         println("📷 [ANDROID]   lutUri: $lutUri")
         println("📷 [ANDROID]   lutDimension: $lutDimension")
@@ -122,24 +122,38 @@ class ExpoLutFilterModule : Module() {
   private fun loadBitmapFromUri(uriString: String): Bitmap? {
     return try {
       println("📷 [ANDROID] Attempting to load bitmap from: $uriString")
-      val uri = Uri.parse(uriString)
-      println("📷 [ANDROID] Parsed URI scheme: ${uri.scheme}, path: ${uri.path}")
       
-      val inputStream = when (uri.scheme) {
-        "file" -> {
-          val file = File(uri.path!!)
+      // Handle both URI formats and direct file paths
+      val inputStream = when {
+        // Direct file path (no scheme)
+        uriString.startsWith("/") -> {
+          println("📷 [ANDROID] Loading from direct file path")
+          val file = File(uriString)
           println("📷 [ANDROID] File exists: ${file.exists()}, readable: ${file.canRead()}")
           file.inputStream()
         }
-        "content" -> {
-          println("📷 [ANDROID] Using content resolver for content URI")
-          appContext.reactContext!!.contentResolver.openInputStream(uri)
+        // URI with scheme
+        else -> {
+          val uri = Uri.parse(uriString)
+          println("📷 [ANDROID] Parsed URI scheme: ${uri.scheme}, path: ${uri.path}")
+          
+          when (uri.scheme) {
+            "file" -> {
+              val file = File(uri.path!!)
+              println("📷 [ANDROID] File exists: ${file.exists()}, readable: ${file.canRead()}")
+              file.inputStream()
+            }
+            "content" -> {
+              println("📷 [ANDROID] Using content resolver for content URI")
+              appContext.reactContext!!.contentResolver.openInputStream(uri)
+            }
+            "http", "https" -> {
+              println("📷 [ANDROID] Loading from URL: $uriString")
+              URL(uriString).openStream()
+            }
+            else -> throw InputError("Unsupported URI scheme: ${uri.scheme}")
+          }
         }
-        "http", "https" -> {
-          println("📷 [ANDROID] Loading from URL: $uriString")
-          URL(uriString).openStream()
-        }
-        else -> throw InputError("Unsupported URI scheme: ${uri.scheme}")
       }
       
       val bitmap = inputStream?.use { stream ->
