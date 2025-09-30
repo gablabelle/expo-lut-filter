@@ -175,60 +175,34 @@ class ExpoLutFilterModule : Module() {
   }
   
   /**
-   * Applies 3D LUT transformation to a bitmap using RenderScript
+   * Applies 3D LUT transformation to a bitmap using manual processing 
+   * (RenderScript disabled due to linear LUT format complexity)
    */
   private fun applyLutToBitmap(inputBitmap: Bitmap, lutFilter: LutFilter): Bitmap {
-    // Create output bitmap
-    val outputBitmap = Bitmap.createBitmap(
-      inputBitmap.width, 
-      inputBitmap.height, 
-      inputBitmap.config ?: Bitmap.Config.ARGB_8888
-    )
-    
-    try {
-      // Create allocations for input and output
-      val inputAllocation = Allocation.createFromBitmap(renderScript, inputBitmap)
-      val outputAllocation = Allocation.createFromBitmap(renderScript, outputBitmap)
-      
-      // Apply 3D LUT
-      val script3dLut = ScriptIntrinsic3DLUT.create(renderScript, Element.U8_4(renderScript))
-      script3dLut.setLUT(lutFilter.lutAllocation)
-      script3dLut.forEach(inputAllocation, outputAllocation)
-      
-      // Copy result to output bitmap
-      outputAllocation.copyTo(outputBitmap)
-      
-      // Clean up
-      inputAllocation.destroy()
-      outputAllocation.destroy()
-      script3dLut.destroy()
-      
-    } catch (e: Exception) {
-      println("Error applying LUT with RenderScript: ${e.message}")
-      // Fallback to manual processing if RenderScript fails
-      return applyLutManually(inputBitmap, lutFilter)
-    }
-    
-    return outputBitmap
+    println("📷 [ANDROID] Applying LUT manually for better color accuracy")
+    return applyLutManually(inputBitmap, lutFilter)
   }
   
   /**
-   * Manual fallback for LUT processing without RenderScript
+   * Manual LUT processing using linear pixel lookup (matches iOS Core Image behavior)
    */
   private fun applyLutManually(inputBitmap: Bitmap, lutFilter: LutFilter): Bitmap {
     val width = inputBitmap.width
     val height = inputBitmap.height
     val outputBitmap = Bitmap.createBitmap(width, height, inputBitmap.config ?: Bitmap.Config.ARGB_8888)
     
+    println("📷 [ANDROID] Processing ${width}x${height} image with linear LUT lookup")
+    
     // Process each pixel
     for (y in 0 until height) {
       for (x in 0 until width) {
         val pixel = inputBitmap.getPixel(x, y)
-        val newPixel = lutFilter.transformPixel(pixel)
+        val newPixel = lutFilter.transformPixelLinear(pixel)
         outputBitmap.setPixel(x, y, newPixel)
       }
     }
     
+    println("📷 [ANDROID] Manual LUT processing complete")
     return outputBitmap
   }
   
@@ -336,69 +310,63 @@ class ExpoLutFilterModule : Module() {
     }
     
     /**
-     * Converts LUT bitmap (usually 512x512 for 64x64x64) to 3D byte array
+     * Converts LUT bitmap to 3D byte array - iOS style linear pixel arrangement
      */
     private fun convertLutBitmapTo3D(lutBitmap: Bitmap, dimension: Int): ByteArray {
       val size = dimension * dimension * dimension * 4 // RGBA
       val lutData = ByteArray(size)
       
-      // Calculate how the LUT is laid out in 2D
-      // Common format: 8x8 grid of 64x64 squares for 64^3 LUT
-      val squaresPerRow = kotlin.math.sqrt(dimension.toDouble()).toInt()
-      val squareSize = dimension
+      println("📷 [ANDROID] Converting LUT bitmap: ${lutBitmap.width}x${lutBitmap.height} to ${dimension}³ LUT")
+      
+      // iOS processes pixels linearly (row by row), not in 2D grid layout
+      // The bitmap contains exactly dimension³ pixels arranged in rows
+      val expectedPixels = dimension * dimension * dimension
+      val actualPixels = lutBitmap.width * lutBitmap.height
+      
+      if (actualPixels != expectedPixels) {
+        println("📷 [ANDROID] WARNING: LUT size mismatch. Expected $expectedPixels pixels, got $actualPixels")
+      }
       
       var index = 0
-      for (b in 0 until dimension) { // Blue channel varies slowest
-        for (g in 0 until dimension) { // Green channel
-          for (r in 0 until dimension) { // Red channel varies fastest
-            // Calculate position in 2D LUT image
-            val squareX = (b % squaresPerRow) * squareSize
-            val squareY = (b / squaresPerRow) * squareSize
-            val pixelX = squareX + r
-            val pixelY = squareY + g
-            
-            // Get pixel from LUT image
-            val pixel = lutBitmap.getPixel(pixelX, pixelY)
-            
-            // Extract RGBA and store in byte array
-            lutData[index++] = ((pixel shr 16) and 0xFF).toByte() // R
-            lutData[index++] = ((pixel shr 8) and 0xFF).toByte()  // G
-            lutData[index++] = (pixel and 0xFF).toByte()          // B
-            lutData[index++] = ((pixel shr 24) and 0xFF).toByte() // A
-          }
+      // Read pixels row by row from the bitmap
+      for (y in 0 until lutBitmap.height) {
+        for (x in 0 until lutBitmap.width) {
+          if (index >= size) break
+          
+          val pixel = lutBitmap.getPixel(x, y)
+          
+          // Extract RGBA components and store in byte array
+          lutData[index++] = ((pixel shr 16) and 0xFF).toByte() // R
+          lutData[index++] = ((pixel shr 8) and 0xFF).toByte()  // G  
+          lutData[index++] = (pixel and 0xFF).toByte()          // B
+          lutData[index++] = ((pixel shr 24) and 0xFF).toByte() // A
         }
       }
       
+      println("📷 [ANDROID] Converted ${index / 4} pixels to LUT data")
       return lutData
     }
     
     /**
-     * Extracts LUT data as float array for manual processing
+     * Extracts LUT data as float array for manual processing - iOS style linear arrangement
      */
     private fun extractLutData(lutBitmap: Bitmap, dimension: Int): FloatArray {
       val size = dimension * dimension * dimension * 4
       val lutData = FloatArray(size)
       
-      val squaresPerRow = kotlin.math.sqrt(dimension.toDouble()).toInt()
-      val squareSize = dimension
-      
       var index = 0
-      for (b in 0 until dimension) {
-        for (g in 0 until dimension) {
-          for (r in 0 until dimension) {
-            val squareX = (b % squaresPerRow) * squareSize
-            val squareY = (b / squaresPerRow) * squareSize
-            val pixelX = squareX + r
-            val pixelY = squareY + g
-            
-            val pixel = lutBitmap.getPixel(pixelX, pixelY)
-            
-            // Normalize to 0-1 range
-            lutData[index++] = ((pixel shr 16) and 0xFF) / 255f // R
-            lutData[index++] = ((pixel shr 8) and 0xFF) / 255f  // G
-            lutData[index++] = (pixel and 0xFF) / 255f          // B
-            lutData[index++] = ((pixel shr 24) and 0xFF) / 255f // A
-          }
+      // Read pixels linearly row by row, matching iOS behavior
+      for (y in 0 until lutBitmap.height) {
+        for (x in 0 until lutBitmap.width) {
+          if (index >= size) break
+          
+          val pixel = lutBitmap.getPixel(x, y)
+          
+          // Normalize to 0-1 range to match iOS float processing
+          lutData[index++] = ((pixel shr 16) and 0xFF) / 255f // R
+          lutData[index++] = ((pixel shr 8) and 0xFF) / 255f  // G
+          lutData[index++] = (pixel and 0xFF) / 255f          // B
+          lutData[index++] = ((pixel shr 24) and 0xFF) / 255f // A
         }
       }
       
@@ -406,7 +374,32 @@ class ExpoLutFilterModule : Module() {
     }
     
     /**
-     * Transforms a single pixel using the LUT (for manual fallback)
+     * Transforms a single pixel using linear LUT lookup (matches iOS)
+     */
+    fun transformPixelLinear(pixel: Int): Int {
+      val r = (pixel shr 16) and 0xFF
+      val g = (pixel shr 8) and 0xFF  
+      val b = pixel and 0xFF
+      val a = (pixel shr 24) and 0xFF
+      
+      // Calculate linear index in the LUT based on RGB values
+      // This matches how iOS Core Image processes the linear pixel data
+      val lutIndex = (b * dimension * dimension + g * dimension + r) * 4
+      
+      if (lutIndex + 3 < lutData.size) {
+        val newR = (lutData[lutIndex] * 255).toInt().coerceIn(0, 255)
+        val newG = (lutData[lutIndex + 1] * 255).toInt().coerceIn(0, 255) 
+        val newB = (lutData[lutIndex + 2] * 255).toInt().coerceIn(0, 255)
+        
+        return (a shl 24) or (newR shl 16) or (newG shl 8) or newB
+      }
+      
+      // Return original pixel if index out of bounds
+      return pixel
+    }
+    
+    /**
+     * Transforms a single pixel using the LUT (old trilinear method - kept for reference)
      */
     fun transformPixel(pixel: Int): Int {
       val r = (pixel shr 16) and 0xFF
