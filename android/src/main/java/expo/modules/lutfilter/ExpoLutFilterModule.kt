@@ -65,27 +65,30 @@ class ExpoLutFilterModule : Module() {
     }
     
     // Main LUT processing function
-    AsyncFunction("applyLUT") { 
-      inputImageUri: String, 
-      filterId: String, 
-      lutUri: String, 
-      lutDimension: Int, 
-      compression: Double, 
-      withGrain: Boolean ->
-      
+    AsyncFunction("applyLUT") {
+      inputImageUri: String,
+      filterId: String,
+      lutUri: String,
+      lutDimension: Int,
+      intensity: Double,
+      withGrain: Boolean,
+      metadata: String ->
+
       try {
         println("📷 [ANDROID] applyLUT called with:")
         println("📷 [ANDROID]   inputImageUri: '$inputImageUri' (${inputImageUri?.javaClass?.simpleName})")
         println("📷 [ANDROID]   filterId: $filterId")
         println("📷 [ANDROID]   lutUri: $lutUri")
         println("📷 [ANDROID]   lutDimension: $lutDimension")
-        
+        println("📷 [ANDROID]   intensity: $intensity")
+        println("📷 [ANDROID]   metadata: $metadata")
+
         // Load input image
-        val inputBitmap = loadBitmapFromUri(inputImageUri) 
+        val inputBitmap = loadBitmapFromUri(inputImageUri)
           ?: throw InputError("Failed to load input image")
-        
+
         println("📷 [ANDROID] Input image loaded successfully")
-        
+
         // Get or create LUT filter
         val lutFilter = filterCache.getOrPut(filterId) {
           println("📷 [ANDROID] Loading LUT filter for $filterId")
@@ -93,23 +96,26 @@ class ExpoLutFilterModule : Module() {
             ?: throw InputError("Failed to load LUT image")
           LutFilter(filterId, lutBitmap, lutDimension)
         }
-        
-        println("📷 [ANDROID] LUT filter ready, applying transformation")
-        
+
+        // Set filter intensity
+        lutFilter.intensity = intensity
+
+        println("📷 [ANDROID] LUT filter ready, applying transformation with intensity $intensity")
+
         // Apply LUT transformation
         var processedBitmap = applyLutToBitmap(inputBitmap, lutFilter)
-        
+
         // Apply grain overlay if requested
         if (withGrain && grainBitmap != null) {
           println("Applying grain...")
           processedBitmap = applyGrainOverlay(processedBitmap, grainBitmap!!, grainOpacity, grainBlendMode)
           println("Applied grain!")
         }
-        
-        // Save to cache and return URI
-        val outputUri = saveBitmapToCache(processedBitmap, compression)
+
+        // Save to cache with high quality (0.95) and metadata
+        val outputUri = saveBitmapToCache(processedBitmap, metadata, 0.95)
         return@AsyncFunction outputUri
-        
+
       } catch (e: InputError) {
         throw e
       } catch (e: Exception) {
@@ -346,21 +352,42 @@ class ExpoLutFilterModule : Module() {
   }
   
   /**
-   * Saves bitmap to cache directory and returns the file URI
+   * Saves bitmap to cache directory with EXIF metadata and returns the file URI
    */
-  private fun saveBitmapToCache(bitmap: Bitmap, compressionQuality: Double): String {
+  private fun saveBitmapToCache(bitmap: Bitmap, metadata: String, compressionQuality: Double): String {
     val cacheDir = appContext.reactContext!!.cacheDir
     val fileName = "${UUID.randomUUID()}.jpg"
     val file = File(cacheDir, fileName)
-    
+
     try {
+      // First save the bitmap
       FileOutputStream(file).use { out: FileOutputStream ->
         bitmap.compress(
-          Bitmap.CompressFormat.JPEG, 
-          (compressionQuality * 100).toInt(), 
+          Bitmap.CompressFormat.JPEG,
+          (compressionQuality * 100).toInt(),
           out
         )
       }
+
+      // Add EXIF metadata if provided
+      if (metadata.isNotEmpty()) {
+        try {
+          val exif = ExifInterface(file.absolutePath)
+
+          // Add metadata to various EXIF fields for maximum compatibility
+          exif.setAttribute(ExifInterface.TAG_USER_COMMENT, metadata)
+          exif.setAttribute(ExifInterface.TAG_IMAGE_DESCRIPTION, metadata)
+
+          // Save the metadata
+          exif.saveAttributes()
+
+          println("Image saved with EXIF metadata: $metadata")
+        } catch (e: Exception) {
+          println("Warning: Could not add EXIF metadata: ${e.message}")
+          // Continue anyway - image is saved even if metadata fails
+        }
+      }
+
       println("Compressed image saved to cache: ${file.absolutePath}")
       return Uri.fromFile(file).toString()
     } catch (e: Exception) {
@@ -376,10 +403,12 @@ class ExpoLutFilterModule : Module() {
     val lutBitmap: Bitmap,
     val dimension: Int
   ) {
+    var intensity: Double = 1.0  // Filter intensity (0.0 to 1.0)
+
     val lutAllocation: Allocation by lazy {
       createLutAllocation(lutBitmap, dimension)
     }
-    
+
     private val lutData: FloatArray by lazy {
       extractLutData(lutBitmap, dimension)
     }
@@ -512,37 +541,42 @@ class ExpoLutFilterModule : Module() {
     }
     
     /**
-     * Transforms a single pixel using the LUT (old trilinear method - kept for reference)
+     * Transforms a single pixel using the LUT with intensity blending
      */
     fun transformPixel(pixel: Int): Int {
       val r = (pixel shr 16) and 0xFF
       val g = (pixel shr 8) and 0xFF
       val b = pixel and 0xFF
       val a = (pixel shr 24) and 0xFF
-      
+
       // Normalize to LUT dimension
       val rf = r / 255f * (dimension - 1)
       val gf = g / 255f * (dimension - 1)
       val bf = b / 255f * (dimension - 1)
-      
+
       // Trilinear interpolation
       val r0 = rf.toInt().coerceIn(0, dimension - 2)
       val g0 = gf.toInt().coerceIn(0, dimension - 2)
       val b0 = bf.toInt().coerceIn(0, dimension - 2)
-      
+
       val rd = rf - r0
       val gd = gf - g0
       val bd = bf - b0
-      
+
       // Sample 8 surrounding points and interpolate
-      val newR = interpolate3D(r0, g0, b0, rd, gd, bd, 0)
-      val newG = interpolate3D(r0, g0, b0, rd, gd, bd, 1)
-      val newB = interpolate3D(r0, g0, b0, rd, gd, bd, 2)
-      
-      return (a shl 24) or 
-             ((newR * 255).toInt() shl 16) or 
-             ((newG * 255).toInt() shl 8) or 
-             (newB * 255).toInt()
+      val filteredR = interpolate3D(r0, g0, b0, rd, gd, bd, 0)
+      val filteredG = interpolate3D(r0, g0, b0, rd, gd, bd, 1)
+      val filteredB = interpolate3D(r0, g0, b0, rd, gd, bd, 2)
+
+      // Blend filtered result with original based on intensity
+      val finalR = (filteredR * intensity + (r / 255f) * (1 - intensity)) * 255
+      val finalG = (filteredG * intensity + (g / 255f) * (1 - intensity)) * 255
+      val finalB = (filteredB * intensity + (b / 255f) * (1 - intensity)) * 255
+
+      return (a shl 24) or
+             (finalR.toInt() shl 16) or
+             (finalG.toInt() shl 8) or
+             finalB.toInt()
     }
     
     /**

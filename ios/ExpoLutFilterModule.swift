@@ -1,6 +1,8 @@
 import ExpoModulesCore
 import Foundation
 import UIKit
+import ImageIO
+import MobileCoreServices
 
 public class ExpoLutFilterModule: Module {
     var grainOpacity: Double = 0.8
@@ -44,7 +46,7 @@ public class ExpoLutFilterModule: Module {
         
         // Defines a JavaScript function that always returns a Promise and whose native code
         // is by default dispatched on the different thread than the JavaScript runtime runs on.
-        AsyncFunction("applyLUT") { (inputImageUri: String, filterId: String, lutUri: String, lutDimension: Int, compression: Double, withGrain: Bool) in
+        AsyncFunction("applyLUT") { (inputImageUri: String, filterId: String, lutUri: String, lutDimension: Int, intensity: Double, withGrain: Bool, metadata: String) in
             let lut = loadCGImage(from: lutUri)
             if lut == nil {
                 throw InputError.failedToLoadLUT
@@ -59,58 +61,103 @@ public class ExpoLutFilterModule: Module {
                 input = overlayImageWithBlendMode(mainImage: input!, overlayImage: grainImage!, opacity: grainOpacity, blendMode: grainBlendMode)
                 print("applied grain!")
             }
-            let filter: FilterColorCube
+            var filter: FilterColorCube
             if let existingFilter = filterMap[filterId]{
                 filter = existingFilter
             } else {
                 filter = FilterColorCube(identifier: filterId, lutImage: lutImageSource, dimension: lutDimension)
-                filterMap[filterId] = filter
             }
+            // Set the filter intensity
+            filter.amount = intensity
+            filterMap[filterId] = filter
             let outputCI = filter.apply(to: input!)
-            let outputUri = saveCIImageToCache(outputCI, compressionQuality: CGFloat(compression))
+            // Use high quality (0.95) for output to preserve image quality
+            let outputUri = saveCIImageToCache(outputCI, metadata: metadata, compressionQuality: 0.95)
             return outputUri?.absoluteString
         }
     }
-    
+
     func renderCIImageToCGImage(_ ciImage: CIImage) -> CGImage? {
         let context = CIContext(options: nil) // Create a Core Image context
         return context.createCGImage(ciImage, from: ciImage.extent)
     }
-    
-    func saveCIImageToCache(_ ciImage: CIImage, compressionQuality: CGFloat = 0.8) -> URL? {
+
+    func saveCIImageToCache(_ ciImage: CIImage, metadata: String, compressionQuality: CGFloat = 0.8) -> URL? {
         // Render the CIImage to a CGImage
         guard let cgImage = renderCIImageToCGImage(ciImage) else {
             print("Failed to render CGImage from CIImage")
             return nil
         }
-        
-        // Convert CGImage to UIImage (optional but simplifies saving)
+
+        // Convert CGImage to UIImage
         let uiImage = UIImage(cgImage: cgImage)
-        
-        // Convert UIImage to JPEG Data with spec ified compression quality
+
+        // Convert UIImage to JPEG Data with specified compression quality
         guard let imageData = uiImage.jpegData(compressionQuality: compressionQuality) else {
             print("Failed to convert UIImage to JPEG data")
             return nil
         }
-        
+
         // Get the cache directory URL
         let fileManager = FileManager.default
         guard let cacheDirectory = fileManager.urls(for: .cachesDirectory, in: .userDomainMask).first else {
             print("Failed to get cache directory")
             return nil
         }
-        
+
         // Create a unique file name for the JPEG image
         let fileName = UUID().uuidString + ".jpg"
         let fileURL = cacheDirectory.appendingPathComponent(fileName)
-        
-        // Write the image data to the cache directory
+
+        // Add EXIF/IPTC metadata with filter information
         do {
-            try imageData.write(to: fileURL)
-            print("Compressed image saved to cache directory: \(fileURL)")
-            return fileURL
+            // Create image source from data
+            guard let source = CGImageSourceCreateWithData(imageData as CFData, nil),
+                  let metadataDict = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any] else {
+                // Fallback: save without metadata
+                try imageData.write(to: fileURL)
+                return fileURL
+            }
+
+            // Create mutable metadata dictionary
+            var mutableMetadata = metadataDict
+
+            // Only add metadata if provided
+            if !metadata.isEmpty {
+                // Add IPTC caption/description
+                var iptcDict = (mutableMetadata[kCGImagePropertyIPTCDictionary as String] as? [String: Any]) ?? [:]
+                iptcDict[kCGImagePropertyIPTCCaptionAbstract as String] = metadata
+                iptcDict[kCGImagePropertyIPTCObjectName as String] = metadata
+                mutableMetadata[kCGImagePropertyIPTCDictionary as String] = iptcDict
+
+                // Add EXIF user comment
+                var exifDict = (mutableMetadata[kCGImagePropertyExifDictionary as String] as? [String: Any]) ?? [:]
+                exifDict[kCGImagePropertyExifUserComment as String] = metadata
+                mutableMetadata[kCGImagePropertyExifDictionary as String] = exifDict
+            }
+
+            // Create destination and write image with metadata
+            guard let destination = CGImageDestinationCreateWithURL(fileURL as CFURL, kUTTypeJPEG, 1, nil) else {
+                // Fallback: save without metadata
+                try imageData.write(to: fileURL)
+                return fileURL
+            }
+
+            CGImageDestinationAddImage(destination, cgImage, mutableMetadata as CFDictionary)
+
+            if CGImageDestinationFinalize(destination) {
+                print("Image with metadata saved to cache directory: \(fileURL)")
+                if !metadata.isEmpty {
+                    print("Metadata added to IPTC and EXIF: \(metadata)")
+                }
+                return fileURL
+            } else {
+                // Fallback: save without metadata
+                try imageData.write(to: fileURL)
+                return fileURL
+            }
         } catch {
-            print("Error saving compressed image to cache: \(error)")
+            print("Error saving image to cache: \(error)")
             return nil
         }
     }

@@ -7,16 +7,18 @@ export async function applyLUT(
   filterId: string,
   lutUri: string,
   lutDimension = 8, // 8 or 16 or 64 typically
-  compression?: number, // 0.0 to 1.0
+  intensity?: number, // 0.0 to 1.0 - filter strength
   withGrain?: boolean,
+  metadata?: string, // Optional metadata to embed in the image
 ) {
   return await ExpoLutFilterModule.applyLUT(
     inputImageUri,
     filterId,
     lutUri,
     lutDimension,
-    compression ?? 0.8,
+    intensity ?? 1.0,
     withGrain ?? false,
+    metadata ?? "",
   );
 }
 
